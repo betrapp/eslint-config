@@ -1,0 +1,21 @@
+module.exports = {
+    rules: {
+        'object-curly-newline': [0, { ImportDeclaration: 'never' }],
+        'no-prototype-builtins': 'off',
+        'max-len': 'off',
+        'no-return-assign': 'off',
+        'no-nested-ternary': 'off',
+        'consistent-return': 'off',
+        'indent': 'off',
+        'linebreak-style': 'off',
+        'arrow-parens': 'off',
+        'no-confusing-arrow': 'off',
+        'comma-dangle': 'off',
+        'operator-linebreak': 'off',
+        'implicit-arrow-linebreak': 'off',
+        'no-console': 'error',
+        'function-paren-newline': 'off',
+        'camelcase': 'off',
+        'brace-style': 'off',
+    },
+};
