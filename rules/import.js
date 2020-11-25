@@ -1,5 +1,3 @@
-const path = require('path');
-
 module.exports = {
     extends: ['plugin:import/errors'],
     plugins: ['import'],
@@ -13,10 +11,7 @@ module.exports = {
         'import/resolver': {
             node: {
                 extensions: ['.js', '.jsx', '.ts', '.tsx', '.d.ts'],
-            },
-            'eslint-import-resolver-lerna': {
-                packages: path.resolve(__dirname, '../../'),
-            },
+            }
         },
     },
 };
