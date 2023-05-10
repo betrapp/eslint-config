@@ -1,5 +1,5 @@
 {
-  "name": "@fansunite/eslint-config",
+  "name": "@betrapp/eslint-config",
   "version": "1.0.5",
   "peerDependencies": {
     "eslint": ">= 5",
