@@ -1,0 +1,354 @@
+version: 2.1
+
+orbs:
+  android: circleci/android@2.2.0
+  macos: circleci/macos@2.3.4
+  node: circleci/node@5.1.0
+
+commands:
+  detox_build_ios:
+    steps:
+      - run: |
+          npm run clean-detox
+          npm run detox:build:ios-sim-staging-release
+  config_ios_detox_env:
+    steps:
+      - restore_cache:
+          keys:
+            - brew-cache-{{ arch }}-{{ .Environment.CACHE_VERSION }}
+      - run:
+            name: Configure detox environment
+            command: |
+              HOMEBREW_NO_AUTO_UPDATE=1 brew tap wix/brew >/dev/null
+              HOMEBREW_NO_AUTO_UPDATE=1 brew tap homebrew/cask >/dev/null
+              HOMEBREW_NO_AUTO_UPDATE=1 arch -arm64 brew install applesimutils >/dev/null
+              touch .watchmanconfig
+              node -v
+      - save_cache:
+            key: brew-cache-{{ arch }}-{{ .Environment.CACHE_VERSION }}
+            paths:
+              - ~/Library/Caches/Homebrew
+  detox_build_android:
+    steps:
+      - android/restore-gradle-cache
+      - run: |
+          npm run detox:build:android-emu-staging-debug
+      - android/save-gradle-cache
+  metro_start:
+    steps:
+      - run:
+          name: Metro (background)
+          command: npm run start
+          background: true
+  prep_config:
+    steps:
+      - run:
+          name: Config Scripts
+          command: |
+            npm run get-phrases-from-babel
+            npm run get-wl-config dragonbet
+            npm run get-feature-config
+            npm run get-theme-config
+
+jobs:
+  build_and_lint:
+    docker:
+      - image: cimg/node:12.16
+    working_directory: ~/chameleon-mobile
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+              - v1-dependencies-{{ .Branch }}-{{ checksum "package-lock.json" }}
+              # fallback to using the latest cache if no exact match is found
+              - v1-dependencies-
+      - run: npm set //registry.npmjs.org/:_authToken=$NPM_TOKEN
+      - run: npm install
+      - save_cache:
+          paths:
+            - ~/.npm
+            - ~/.cache
+          key: v1-dependencies-{{ .Branch }}-{{ checksum "package-lock.json" }}
+      - run: npm run check-lint
+  build_ios:
+    macos:
+      xcode: 14.2.0
+      resource_class: macos.m1.large.gen1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - checkout
+      - node/install:
+          node-version: 16.13.2
+      - macos/install-rosetta # Required when using an M1 macOS. Remove if using Intel macOS
+      - run: node -v
+      - run:
+          name: Create env variables
+          command: |
+            mkdir -p env-templates/csb
+            echo -e "BABEL_SITE=\"dragonbet.co.uk\"\nBASE_LOCALE=\"en-UK\"\nCHAMELEON_LITE_BASE_PATH=\"https://stage1-api.dragonbet.co.uk\"\nENVIRONMENT=\"stage1\"\nTEST_ENVIRONMENT=\"true\"\nABLY_APP_KEY=\"$ABLY_APP_KEY\"\nGOOGLE_PLACES_API_KEY=\"$GOOGLE_PLACES_API_KEY\"" > env-templates/csb/.env.stage
+            echo -e "BABEL_SITE=\"dragonbet.co.uk\"\nBASE_LOCALE= \"en-UK\"\nCHAMELEON_LITE_BASE_PATH=\"https://stage1-api.dragonbet.co.uk\"\nENVIRONMENT=\"stage1\"\nTEST_ENVIRONMENT=\"true\"\nABLY_APP_KEY=\"$ABLY_APP_KEY\"\nGOOGLE_PLACES_API_KEY=\"$GOOGLE_PLACES_API_KEY\"\nWL_NAME=\"csb\"" > .env
+      - restore_cache:
+          keys:
+            # when lock file changes, use increasingly general patterns to restore cache
+            - node-v1-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - node-v1-{{ .Branch }}-
+            - node-v1-
+      - run: npm install --legacy-peer-deps
+      - prep_config
+      - restore_cache:
+          keys:
+            - pods-v1-{{ .Branch }}-{{ checksum "ios/Podfile.lock" }}
+            - pods-v1-{{ .Branch }}-
+            - pods-v1-
+      - run: npm run ios-pods
+      - save_cache:
+          paths:
+            - ~/chameleon-mobile/ios/
+          key: pods-v1-{{ .Branch }}-{{ checksum "ios/Podfile.lock" }}
+      - detox_build_ios
+      - save_cache:
+          paths:
+            - ~/usr/local/lib/node_modules  # location depends on npm version
+          key: node-v1-{{ .Branch }}-{{ checksum "package-lock.json" }}
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - chameleon-mobile
+  detox_ios:
+    macos:
+      xcode: 14.2.0
+      resource_class: macos.m1.large.gen1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - node/install:
+          node-version: 16.13.2
+      - macos/install-rosetta # Required when using an M1 macOS. Remove if using Intel macOS
+      - config_ios_detox_env
+      - run:
+          name: Boot iOS Simulator # Must be the same simulator as .detoxrc.json
+          command: xcrun simctl boot "iPhone 14 Pro Max"
+      - metro_start
+      - run: npm run e2e:ios-sim-staging-release
+      - store_artifacts:
+          path: artifacts
+  detox_login_feature_ios:
+    macos:
+      xcode: 14.2.0
+      resource_class: macos.m1.large.gen1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - node/install:
+          node-version: 16.13.2
+      - macos/install-rosetta # Required when using an M1 macOS. Remove if using Intel macOS
+      - config_ios_detox_env
+      - run:
+          name: Boot iOS Simulator # Must be the same simulator as .detoxrc.json
+          command: xcrun simctl boot "iPhone 14 Pro Max"
+      - metro_start
+      - run: npm run e2e:ios-sim-staging-release -- --tags @loginFeature
+      - store_artifacts:
+          path: artifacts
+  detox_registration_feature_ios:
+    macos:
+      xcode: 14.2.0
+      resource_class: macos.m1.large.gen1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - node/install:
+          node-version: 16.13.2
+      - macos/install-rosetta # Required when using an M1 macOS. Remove if using Intel macOS
+      - config_ios_detox_env
+      - run:
+          name: Boot iOS Simulator # Must be the same simulator as .detoxrc.json
+          command: xcrun simctl boot "iPhone 14 Pro Max"
+      - metro_start
+      - run: npm run e2e:ios-sim-staging-release -- --tags @registration
+      - store_artifacts:
+          path: artifacts
+  build_android:
+    executor:
+      name: android/android-machine
+      resource-class: large
+      tag: 2021.10.1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            # when lock file changes, use increasingly general patterns to restore cache
+            - node-v1-{{ .Branch }}-{{ checksum "package-lock.json" }}
+            - node-v1-{{ .Branch }}-
+            - node-v1-
+      - node/install:
+          node-version: 16.13.2
+      - run:
+          name: Create env variables
+          command: |
+            mkdir -p env-templates/csb
+            echo -e "BABEL_SITE: \"dragonbet.co.uk\"\nBASE_LOCALE: \"en-UK\"\nCHAMELEON_LITE_BASE_PATH: \"https://stage1-api.dragonbet.co.uk\"\nENVIRONMENT=\"stage1\"\nTEST_ENVIRONMENT=\"true\"\nABLY_APP_KEY=\"$ABLY_APP_KEY\"\nGOOGLE_PLACES_API_KEY=\"$GOOGLE_PLACES_API_KEY\"" > env-templates/csb/.env.stage
+            echo -e "BABEL_SITE: \"dragonbet.co.uk\"\nBASE_LOCALE: \"en-UK\"\nCHAMELEON_LITE_BASE_PATH: \"https://stage1-api.dragonbet.co.uk\"\nENVIRONMENT=\"stage1\"\nTEST_ENVIRONMENT=\"true\"\nABLY_APP_KEY=\"$ABLY_APP_KEY\"\nWL_NAME=\"csb\"" > .env
+            mkdir -p env-templates/csb/android
+            echo -e "storeFile=$STORE_FILE\nstorePassword=$STORE_PASSWORD\nkeyAlias=$KEY_ALIAS\nkeyPassword=$KEY_PASSWORD" > env-templates/csb/android/keystore.properties
+            echo $GOOGLE_SERVICES_STAGING > android/app/src/staging/google-services.json
+            echo $GOOGLE_SERVICES_STAGING > android/app/google-services.json
+      - run:
+          name: Decode keystore
+          command: |
+            echo $BASE64_KEYSTORE | base64 --decode > env-templates/csb/android/cm_release_keystore.jks
+      - run: npm install
+      - prep_config
+      - detox_build_android
+      - save_cache:
+          paths:
+            - ~/usr/local/lib/node_modules  # location depends on npm version
+          key: node-v1-{{ .Branch }}-{{ checksum "package-lock.json" }}
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - chameleon-mobile
+  detox_android:
+    executor:
+      name: android/android-machine
+      resource-class: large
+      tag: 2023.04.1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - android/create-avd:
+          avd-name: Pixel_5_API_30
+          install: true
+          system-image: "system-images;android-30;default;x86_64"
+      - run:
+          name: Resize emulator # Some android tests fail without resizing due to testID's being off screen
+          command: |
+            echo "hw.lcd.density=420" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.height=2340" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.width=1080" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+      - android/start-emulator:
+          avd-name: Pixel_5_API_30 # Must be the same emulator as .detoxrc.json
+          post-emulator-launch-assemble-command: ''
+      - metro_start
+      - run: npm run e2e:android-emu-staging-debug
+      - store_artifacts:
+          path: artifacts
+  detox_login_feature_android:
+    executor:
+      name: android/android-machine
+      resource-class: large
+      tag: 2023.04.1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - node/install:
+          node-version: 16.13.2
+      - android/create-avd:
+          avd-name: Pixel_5_API_30 # Must be the same emulator as .detoxrc.json
+          install: true
+          system-image: "system-images;android-30;default;x86_64"
+      - run:
+          name: Resize emulator
+          command: |
+            echo "hw.lcd.density=420" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.height=2340" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.width=1080" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+      - android/start-emulator:
+          avd-name: Pixel_5_API_30 # Must be the same emulator as .detoxrc.json
+          post-emulator-launch-assemble-command: ''
+      - metro_start
+      - run: npm run e2e:android-emu-staging-debug  -- --tags @loginFeature
+      - store_artifacts:
+          path: artifacts
+  detox_registration_feature_android:
+    executor:
+      name: android/android-machine
+      resource-class: large
+      tag: 2023.04.1
+    working_directory: ~/chameleon-mobile
+    steps:
+      - attach_workspace:
+          at: ~/
+      - node/install:
+          node-version: 16.13.2
+      - android/create-avd:
+          avd-name: Pixel_5_API_30 # Must be the same emulator as .detoxrc.json
+          install: true
+          system-image: "system-images;android-30;default;x86_64"
+      - run:
+          name: Resize emulator # Some android tests fail without resizing due to testID's being off screen
+          command: |
+            echo "hw.lcd.density=420" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.height=2340" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+            echo "hw.lcd.width=1080" >> ~/.android/avd/Pixel_5_API_30.avd/config.ini
+      - android/start-emulator:
+          avd-name: Pixel_5_API_30 # Must be the same emulator as .detoxrc.json
+          post-emulator-launch-assemble-command: ''
+      - metro_start
+      - run: npm run e2e:android-emu-staging-debug  -- --tags @registration
+      - store_artifacts:
+          path: artifacts
+
+workflows:
+  build_and_linter:
+    jobs:
+      - build_and_lint
+
+  smoke_tests_workflow:
+  # setup for scehduled running of smoke tests
+    triggers:
+      - schedule:
+          cron: '0 11 * * 1,2,3,4,5' # workflow will be triggered every morning on weekdays at 6 AM EST
+          filters:
+            branches:
+              only:
+                - dev
+    jobs:
+      - build_and_lint
+      - build_ios:
+          requires:
+            - build_and_lint
+      - build_android:
+          requires:
+            - build_and_lint
+      - detox_login_feature_ios:
+          requires:
+            - build_ios
+      - detox_registration_feature_ios:
+          requires:
+            - build_ios
+      - detox_login_feature_android:
+          requires:
+            - build_android
+      - detox_registration_feature_android:
+          requires:
+            - build_android
+
+  regression_suite_workflow:
+    triggers:
+      - schedule:
+          cron: '0 6 * * 5' # workflow will be executed every Friday at 1 AM EST
+          filters:
+            branches:
+              only:
+                - dev
+    jobs:
+      - build_and_lint
+      - build_ios:
+          requires:
+            - build_and_lint
+      - build_android:
+          requires:
+            - build_and_lint
+      - detox_ios:
+          requires:
+            - build_ios
+      - detox_android:
+          requires:
+            - build_android
